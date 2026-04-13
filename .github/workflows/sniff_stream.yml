@@ -15,6 +15,9 @@ on:
         default: '15'
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # Job paralleli: Sniffing e Benchmark MTR
+  # ---------------------------------------------------------------------------
   sniff:
     name: Sniff & Bench Job ${{ matrix.job_index }}
     runs-on: ubuntu-latest
@@ -58,18 +61,25 @@ jobs:
           path: cdn_${{ matrix.job_index }}.json
           retention-days: 1
 
+  # ---------------------------------------------------------------------------
+  # Job finale: Merge basato sullo Score di Performance
+  # ---------------------------------------------------------------------------
   merge:
     name: Select Best CDN and Generate Conf
     needs: sniff
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install Python Dependencies
-        run: pip install requests pytz
+        # FIX: Installiamo playwright anche qui per permettere l'import di sniffer.py
+        run: |
+          pip install playwright requests pytz
 
       - name: Scarica tutti i risultati
         uses: actions/download-artifact@v4
@@ -92,3 +102,4 @@ jobs:
           path: |
             upstream_${{ inputs.stream_id }}.conf
             stream_${{ inputs.stream_id }}.conf
+          retention-days: 7
