@@ -14,7 +14,7 @@ IP2LOCATION_API_KEY = "CCC14E23F2330AA73D3A535FB07D2DC2"
 CDN_COUNTRY_PRIORITY = {"IT": 0, "GB": 1, "NL": 2, "DE": 3, "FR": 4, "US": 10}
 
 def escape_nginx(s):
-    """Sostituisce $ con ${dlr} per evitare errori con le variabili Nginx."""
+    """Protegge il simbolo $ usando la variabile ${dlr} definita in nginx.conf"""
     if not s: return ""
     return str(s).replace('$', '${dlr}')
 
@@ -36,7 +36,7 @@ def get_performance_score(hostname: str) -> dict:
         return {"score": 0, "loss": 100, "avg": 999, "stdev": 999}
 
 # ---------------------------------------------------------------------------
-# Template Esatto richiesto dall'utente
+# TEMPLATE DEFINITIVO (STRUTTURA IDENTICA AL TUO ESEMPIO)
 # ---------------------------------------------------------------------------
 
 STREAM_CONF_TEMPLATE = """# =============================================================================
@@ -67,7 +67,7 @@ location /live/{stream_id}/playlist.m3u8 {{
     proxy_set_header Referer          "{referer}";
     proxy_set_header Origin           "{origin}";
     proxy_set_header User-Agent       "{user_agent}";
-    proxy_set_header Accept           "{accept}";
+    proxy_set_header Accept           "*/*";
     proxy_set_header Accept-Language  "en-US,en;q=0.9";
     proxy_set_header Sec-Fetch-Dest   "empty";
     proxy_set_header Sec-Fetch-Mode   "cors";
@@ -75,7 +75,7 @@ location /live/{stream_id}/playlist.m3u8 {{
     {cookie_line}
 
     # Passiamo l'Host reale per evitare il 404 del CDN
-    proxy_set_header Host             "{primary_hostname}";
+    proxy_set_header Host             "{primary_host_only}";
 
     # Failover automatico tramite upstream
     proxy_pass        https://live_cdn_{stream_id}{playlist_path_full};
@@ -104,7 +104,7 @@ location /live/{stream_id}/segment/ {{
     proxy_set_header Origin           "{origin}";
     proxy_set_header User-Agent       "{user_agent}";
     {cookie_line}
-    proxy_set_header Host             "{primary_hostname}";
+    proxy_set_header Host             "{primary_host_only}";
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
@@ -127,33 +127,30 @@ def generate_configs(data, source_url, stream_id, cdn_list):
     playlist_url = data["url"].split("&__")[0]
     parsed = urlparse(playlist_url)
     
-    # 1. UPSTREAM_*.CONF
+    # 1. COSTRUZIONE UPSTREAM
     u_lines = ""
     for i, cdn in enumerate(cdn_list):
         backup = "backup " if i > 0 else ""
-        u_lines += f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s;\n"
-    upstream_conf = f"upstream live_cdn_{stream_id} {{\n{u_lines}    keepalive 32;\n}}\n"
+        u_lines += f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s;\\n"
+    upstream_conf = f"upstream live_cdn_{stream_id} {{\\n{u_lines}    keepalive 32;\\n}}\\n"
 
-    # 2. SUB-FILTERS (Per tutti i CDN)
+    # 2. COSTRUZIONE SUB-FILTERS
     sub_filters = ""
     for cdn in cdn_list:
-        host = cdn['cdn_host'] # Include porta se presente
-        sub_filters += f'    sub_filter "https://{host}/hls/" "/live/{stream_id}/segment/";\n'
-        sub_filters += f'    sub_filter "https://{host}/storage/enc.key" "/live/{stream_id}/enc.key";\n'
+        host = cdn['cdn_host']
+        sub_filters += f'    sub_filter "https://{host}/hls/" "/live/{stream_id}/segment/";\\n'
+        sub_filters += f'    sub_filter "https://{host}/storage/enc.key" "/live/{stream_id}/enc.key";\\n'
 
-    # 3. DATI GENERALI
+    # 3. EXTRAZIONE DATI
     primary = cdn_list[0]
-    primary_hostname = primary['cdn_host'].split(":")[0]
-    
     token_exp = "N/D"
     for pat in [r"[&?]expires=(\d+)", r"[&?]e=(\d+)"]:
         m = re.search(pat, playlist_url)
         if m: 
             token_exp = datetime.fromtimestamp(int(m.group(1)), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    # Estrazione segment_prefix (es: 71urpyq da 71urpyq.m3u8)
-    filename = os.path.basename(parsed.path)
-    seg_prefix = filename.split(".")[0].split("-")[0]
+    # Segment prefix (es: m4vi31opfdn06q4)
+    seg_prefix = os.path.basename(parsed.path).split(".")[0].split("-")[0]
 
     common = {
         "stream_id": stream_id,
@@ -168,9 +165,8 @@ def generate_configs(data, source_url, stream_id, cdn_list):
         "referer": escape_nginx(data.get("referer", "")),
         "origin": escape_nginx(data.get("origin", "")),
         "user_agent": escape_nginx(data.get("user_agent", "")),
-        "accept": data.get("accept", "*/*"),
         "cookie_line": f'proxy_set_header Cookie "{escape_nginx(data["cookie"])}";' if data.get("cookie") else "# no cookie",
-        "primary_hostname": primary_hostname,
+        "primary_host_only": primary['cdn_host'].split(":")[0],
         "playlist_path_full": escape_nginx(parsed.path + ("?" + parsed.query if parsed.query else ""))
     }
 
@@ -186,16 +182,14 @@ def main():
     parser.add_argument("--output", default="cdn_result.json")
     args = parser.parse_args()
 
-    # LOGICA SNIFF-ONLY (GitHub Action Runner)
     if args.sniff_only:
         res = sniff_once(args.url, timeout=args.sniff_timeout)
         if res:
             data = res[0]
             parsed = urlparse(data["url"].split("&__")[0])
-            # Host include la porta se non è 443
+            # Cattura hostname:porta (es: y4mpwzd7.12703830.net:8443)
             host = f"{parsed.hostname}:{parsed.port}" if parsed.port and parsed.port != 443 else parsed.hostname
             
-            # DNS + Geo
             try:
                 ip_res = requests.get(f"https://cloudflare-dns.com/dns-query?name={parsed.hostname}&type=A", headers={"Accept": "application/dns-json"}).json()
                 ip = ip_res["Answer"][0]["data"] if "Answer" in ip_res else None
@@ -211,19 +205,18 @@ def main():
             with open(args.output, "w") as f:
                 json.dump({"cdn": cdn_data, "m3u8": data}, f)
 
-    # LOGICA MERGE (GitHub Action Finalizer)
     elif args.merge_dir:
         cdn_list = []
         first_m = None
-        for f in glob.glob(os.path.join(args.merge_dir, "*.json")):
-            with open(f) as j:
+        for f_path in glob.glob(os.path.join(args.merge_dir, "*.json")):
+            with open(f_path) as j:
                 d = json.load(j)
                 cdn_list.append(d["cdn"])
                 if not first_m: first_m = d["m3u8"]
         
         if not cdn_list: return
 
-        # Sort per score e priorità paese
+        # Sort per score
         cdn_list = sorted(cdn_list, key=lambda x: (-x["perf"]["score"], CDN_COUNTRY_PRIORITY.get(x["cdn_country_code"], 5)))
         
         u, s = generate_configs(first_m, args.url, args.stream_id, cdn_list)
@@ -231,7 +224,7 @@ def main():
         with open(f"upstream_{args.stream_id}.conf", "w") as f: f.write(u)
         with open(f"stream_{args.stream_id}.conf", "w") as f: f.write(s)
         
-        # Salvataggio JSON per la Sentinella locale
+        # Salvataggio DB per Sentinella
         with open(f"cdn_result_{args.stream_id}.json", "w") as f:
             json.dump({"all_cdns": cdn_list}, f)
 
