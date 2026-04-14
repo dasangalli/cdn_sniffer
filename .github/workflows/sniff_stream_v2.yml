@@ -42,13 +42,13 @@ jobs:
       - name: Install Python Dependencies
         run: |
           pip install playwright requests pytz
-          playwright install chromium
-          playwright install-deps chromium
+          # FIX: Installiamo i browser con sudo così sono accessibili a root
+          sudo env "PATH=$PATH" playwright install chromium
+          sudo env "PATH=$PATH" playwright install-deps chromium
 
       - name: Sniff and Performance Test
         run: |
-          # FIX: sudo env "PATH=$PATH" permette a MTR di usare i raw sockets 
-          # mantenendo l'ambiente Python configurato sopra.
+          # Eseguiamo lo script con sudo per MTR, ora Playwright troverà i browser in /root/.cache
           sudo env "PATH=$PATH" python sniffer_to_nginx.py \
             --url "${{ inputs.url }}" \
             --stream-id "${{ inputs.stream_id }}" \
@@ -79,7 +79,6 @@ jobs:
           python-version: '3.11'
 
       - name: Install Python Dependencies
-        # FIX: Installiamo playwright anche qui per permettere l'import di sniffer.py
         run: |
           pip install playwright requests pytz
 
