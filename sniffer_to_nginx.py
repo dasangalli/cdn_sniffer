@@ -14,29 +14,30 @@ IP2LOCATION_API_KEY = "CCC14E23F2330AA73D3A535FB07D2DC2"
 CDN_COUNTRY_PRIORITY = {"IT": 0, "GB": 1, "NL": 2, "DE": 3, "FR": 4, "US": 10}
 
 def escape_nginx(s):
-    """Sostituisce $ con ${dlr} per Nginx."""
+    """
+    Protegge il simbolo $ usando ${dlr} e le virgolette doppie usando \\"
+    per evitare che Nginx tronchi le stringhe dei Cookie o degli URL.
+    """
     if not s: return ""
-    return str(s).replace('$', '${dlr}')
+    # Ordine: prima le virgolette, poi il dollaro
+    s = str(s).replace('"', '\\"')
+    s = s.replace('$', '${dlr}')
+    return s
 
 def _flag(code):
     if not code or len(code) != 2: return "🌐"
     return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in code.upper())
 
 def get_performance_score(hostname: str) -> dict:
-    """Calcola lo score con parsing robusto (indici negativi)."""
     host = hostname.split(":")[0]
     try:
-        # Test rapido (5 pacchetti)
         res = subprocess.run(["mtr", "-rw", "-c", "5", host], capture_output=True, text=True, timeout=15)
         lines = res.stdout.strip().split('\n')
         if not lines: return {"score": 0, "loss": 100, "avg": 999, "stdev": 999}
-        
-        # Pulizia riga finale e parsing a ritroso
         parts = [p for p in re.split(r'\s+', lines[-1].strip()) if p]
         loss  = float(parts[-7].replace('%',''))
         avg   = float(parts[-4])
         stdev = float(parts[-1])
-        
         score = round(max(0, 100 - (loss * 15) - (avg / 10) - (stdev * 5)), 2)
         return {"score": score, "loss": loss, "avg": avg, "stdev": stdev}
     except:
@@ -147,6 +148,7 @@ def generate_configs(data, source_url, stream_id, cdn_list):
     
     sub_filters_content = "\n".join(sf_lines)
 
+    # 3. DATI
     primary = cdn_list[0]
     token_exp = "N/D"
     for pat in [r"[&?]expires=(\d+)", r"[&?]e=(\d+)"]:
