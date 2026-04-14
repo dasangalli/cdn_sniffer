@@ -14,7 +14,7 @@ IP2LOCATION_API_KEY = "CCC14E23F2330AA73D3A535FB07D2DC2"
 CDN_COUNTRY_PRIORITY = {"IT": 0, "GB": 1, "NL": 2, "DE": 3, "FR": 4, "US": 10}
 
 def escape_nginx(s):
-    """Protegge il simbolo $ usando la variabile ${dlr} definita in nginx.conf"""
+    """Sostituisce $ con ${dlr} per Nginx."""
     if not s: return ""
     return str(s).replace('$', '${dlr}')
 
@@ -36,9 +36,8 @@ def get_performance_score(hostname: str) -> dict:
         return {"score": 0, "loss": 100, "avg": 999, "stdev": 999}
 
 # ---------------------------------------------------------------------------
-# TEMPLATE DEFINITIVO (STRUTTURA IDENTICA AL TUO ESEMPIO)
+# Template (Nessun carattere di escape, solo stringa pura)
 # ---------------------------------------------------------------------------
-
 STREAM_CONF_TEMPLATE = """# =============================================================================
 #  {conf_filename}
 #  AUTO-GENERATO da sniffer_to_nginx.py - NON modificare manualmente
@@ -127,30 +126,30 @@ def generate_configs(data, source_url, stream_id, cdn_list):
     playlist_url = data["url"].split("&__")[0]
     parsed = urlparse(playlist_url)
     
-    # 1. COSTRUZIONE UPSTREAM
-    u_lines = ""
+    # 1. UPSTREAM (Usiamo \n normale)
+    u_lines = []
     for i, cdn in enumerate(cdn_list):
         backup = "backup " if i > 0 else ""
-        u_lines += f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s;\\n"
-    upstream_conf = f"upstream live_cdn_{stream_id} {{\\n{u_lines}    keepalive 32;\\n}}\\n"
+        u_lines.append(f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s;")
+    
+    upstream_content = f"upstream live_cdn_{stream_id} {{\n" + "\n".join(u_lines) + "\n    keepalive 32;\n}\n"
 
-    # 2. COSTRUZIONE SUB-FILTERS
-    sub_filters = ""
+    # 2. SUB-FILTERS
+    sf_lines = []
     for cdn in cdn_list:
         host = cdn['cdn_host']
-        sub_filters += f'    sub_filter "https://{host}/hls/" "/live/{stream_id}/segment/";\\n'
-        sub_filters += f'    sub_filter "https://{host}/storage/enc.key" "/live/{stream_id}/enc.key";\\n'
+        sf_lines.append(f'    sub_filter "https://{host}/hls/" "/live/{stream_id}/segment/";')
+        sf_lines.append(f'    sub_filter "https://{host}/storage/enc.key" "/live/{stream_id}/enc.key";')
+    
+    sub_filters_content = "\n".join(sf_lines)
 
-    # 3. EXTRAZIONE DATI
+    # 3. DATI
     primary = cdn_list[0]
     token_exp = "N/D"
     for pat in [r"[&?]expires=(\d+)", r"[&?]e=(\d+)"]:
         m = re.search(pat, playlist_url)
         if m: 
             token_exp = datetime.fromtimestamp(int(m.group(1)), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    # Segment prefix (es: m4vi31opfdn06q4)
-    seg_prefix = os.path.basename(parsed.path).split(".")[0].split("-")[0]
 
     common = {
         "stream_id": stream_id,
@@ -159,9 +158,9 @@ def generate_configs(data, source_url, stream_id, cdn_list):
         "source_url": escape_nginx(source_url),
         "playlist_url": escape_nginx(playlist_url),
         "token_expires": token_exp,
-        "cdn_primary_info": f"{_flag(primary.get('cdn_country_code'))} {primary['cdn_host']} ({primary.get('cdn_city', 'N/D')}, {primary.get('cdn_country_code', 'XX')})",
-        "cdn_sub_filters": sub_filters,
-        "segment_prefix": seg_prefix,
+        "cdn_primary_info": f"{_flag(primary.get('cdn_country_code'))} {primary['cdn_host']} ({primary.get('cdn_city', 'N/D')})",
+        "cdn_sub_filters": sub_filters_content,
+        "segment_prefix": os.path.basename(parsed.path).split(".")[0].split("-")[0],
         "referer": escape_nginx(data.get("referer", "")),
         "origin": escape_nginx(data.get("origin", "")),
         "user_agent": escape_nginx(data.get("user_agent", "")),
@@ -170,7 +169,7 @@ def generate_configs(data, source_url, stream_id, cdn_list):
         "playlist_path_full": escape_nginx(parsed.path + ("?" + parsed.query if parsed.query else ""))
     }
 
-    return upstream_conf, STREAM_CONF_TEMPLATE.format(**common)
+    return upstream_content, STREAM_CONF_TEMPLATE.format(**common)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -187,21 +186,11 @@ def main():
         if res:
             data = res[0]
             parsed = urlparse(data["url"].split("&__")[0])
-            # Cattura hostname:porta (es: y4mpwzd7.12703830.net:8443)
             host = f"{parsed.hostname}:{parsed.port}" if parsed.port and parsed.port != 443 else parsed.hostname
-            
-            try:
-                ip_res = requests.get(f"https://cloudflare-dns.com/dns-query?name={parsed.hostname}&type=A", headers={"Accept": "application/dns-json"}).json()
-                ip = ip_res["Answer"][0]["data"] if "Answer" in ip_res else None
-                geo = requests.get(f"https://api.ip2location.io/?key={IP2LOCATION_API_KEY}&ip={ip}").json() if ip else {}
-            except: geo = {}
-
-            cdn_data = {
-                "cdn_host": host, 
-                "cdn_country_code": geo.get("country_code", "XX"), 
-                "cdn_city": geo.get("city_name", "N/D"),
-                "perf": get_performance_score(host)
-            }
+            ip_res = requests.get(f"https://cloudflare-dns.com/dns-query?name={parsed.hostname}&type=A", headers={"Accept": "application/dns-json"}).json()
+            ip = ip_res["Answer"][0]["data"] if "Answer" in ip_res else None
+            geo = requests.get(f"https://api.ip2location.io/?key={IP2LOCATION_API_KEY}&ip={ip}").json() if ip else {}
+            cdn_data = {"cdn_host": host, "cdn_country_code": geo.get("country_code", "XX"), "cdn_city": geo.get("city_name", "N/D"), "perf": get_performance_score(host)}
             with open(args.output, "w") as f:
                 json.dump({"cdn": cdn_data, "m3u8": data}, f)
 
@@ -215,18 +204,13 @@ def main():
                 if not first_m: first_m = d["m3u8"]
         
         if not cdn_list: return
-
-        # Sort per score
         cdn_list = sorted(cdn_list, key=lambda x: (-x["perf"]["score"], CDN_COUNTRY_PRIORITY.get(x["cdn_country_code"], 5)))
-        
         u, s = generate_configs(first_m, args.url, args.stream_id, cdn_list)
         
         with open(f"upstream_{args.stream_id}.conf", "w") as f: f.write(u)
         with open(f"stream_{args.stream_id}.conf", "w") as f: f.write(s)
         
-        # Salvataggio DB per Sentinella
         with open(f"cdn_result_{args.stream_id}.json", "w") as f:
             json.dump({"all_cdns": cdn_list}, f)
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
