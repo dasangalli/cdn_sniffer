@@ -10,25 +10,25 @@ except ImportError:
     print("[ERROR] sniffer.py non trovato.")
     sys.exit(1)
 
+# Configurazione API per GeoIP
 IP2LOCATION_API_KEY = "CCC14E23F2330AA73D3A535FB07D2DC2"
 CDN_COUNTRY_PRIORITY = {"IT": 0, "GB": 1, "NL": 2, "DE": 3, "FR": 4, "US": 10}
 
-def escape_nginx(s):
+def clean_for_nginx(s):
     """
-    Protegge il simbolo $ usando ${dlr} e le virgolette doppie usando \\"
-    per evitare che Nginx tronchi le stringhe dei Cookie o degli URL.
+    Pulisce le stringhe per Nginx evitando variabili inesistenti.
+    Rimuoviamo il vecchio fix ${dlr} che causava crash.
     """
     if not s: return ""
-    # Ordine: prima le virgolette, poi il dollaro
-    s = str(s).replace('"', '\\"')
-    s = s.replace('$', '${dlr}')
-    return s
+    # Proteggiamo le virgolette doppie per gli header
+    return str(s).replace('"', '\\"')
 
 def _flag(code):
     if not code or len(code) != 2: return "🌐"
     return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in code.upper())
 
 def get_performance_score(hostname: str) -> dict:
+    """MTR eseguito dal Runner (Solo indicativo per l'ordine iniziale)"""
     host = hostname.split(":")[0]
     try:
         res = subprocess.run(["mtr", "-rw", "-c", "5", host], capture_output=True, text=True, timeout=15)
@@ -43,11 +43,10 @@ def get_performance_score(hostname: str) -> dict:
     except:
         return {"score": 0, "loss": 100, "avg": 999, "stdev": 999}
 
+# Template corretto: rimosso l'header Host statico, aggiunto $proxy_host
 STREAM_CONF_TEMPLATE = """# =============================================================================
 #  {conf_filename}
-#  AUTO-GENERATO da sniffer_to_nginx.py - NON modificare manualmente
-#
-#  Stream ID:      {stream_id}
+#  AUTO-GENERATO - Ottimizzato per failover dinamico
 #  Generato il:    {generated_at}
 #  Sorgente:       {source_url}
 #  Playlist URL:   {playlist_url}
@@ -63,9 +62,7 @@ location /live/{stream_id}/playlist.m3u8 {{
     sub_filter_once off;
     sub_filter_types application/vnd.apple.mpegurl application/x-mpegurl text/plain;
     
-    # Sub-filters per tutti i CDN rilevati
 {cdn_sub_filters}
-    # Segmenti con path relativo
     sub_filter "{segment_prefix}-" "/live/{stream_id}/segment/{segment_prefix}-";
 
     proxy_set_header Referer          "{referer}";
@@ -73,22 +70,17 @@ location /live/{stream_id}/playlist.m3u8 {{
     proxy_set_header User-Agent       "{user_agent}";
     proxy_set_header Accept           "*/*";
     proxy_set_header Accept-Language  "en-US,en;q=0.9";
-    proxy_set_header Sec-Fetch-Dest   "empty";
-    proxy_set_header Sec-Fetch-Mode   "cors";
-    proxy_set_header Sec-Fetch-Site   "cross-site";
     {cookie_line}
 
-    # Passiamo l'Host reale per evitare il 404 del CDN
-    proxy_set_header Host             "{primary_host_only}";
+    # FIX: Usiamo $proxy_host per adattarsi dinamicamente al server dell'upstream
+    proxy_set_header Host             $proxy_host;
 
-    # Failover automatico tramite upstream
     proxy_pass        https://live_cdn_{stream_id}{playlist_path_full};
     proxy_ssl_server_name on;
 
     proxy_cache              playlist_cache;
     proxy_cache_valid        200 3s;
     proxy_cache_lock         on;
-    proxy_cache_lock_timeout 2s;
     proxy_cache_use_stale    error timeout updating;
     proxy_cache_background_update on;
 
@@ -99,7 +91,7 @@ location /live/{stream_id}/playlist.m3u8 {{
 }}
 
 # ------------------------------------------------------------------
-# SEGMENTI  /live/{stream_id}/segment/...
+# SEGMENTI  /live/{stream_id}/segment/
 # ------------------------------------------------------------------
 location /live/{stream_id}/segment/ {{
     rewrite ^/live/{stream_id}/segment/(.*)$ /hls/$1 break;
@@ -108,7 +100,9 @@ location /live/{stream_id}/segment/ {{
     proxy_set_header Origin           "{origin}";
     proxy_set_header User-Agent       "{user_agent}";
     {cookie_line}
-    proxy_set_header Host             "{primary_host_only}";
+    
+    # FIX: Anche qui Host dinamico per evitare 404 sui backup
+    proxy_set_header Host             $proxy_host;
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
@@ -116,7 +110,6 @@ location /live/{stream_id}/segment/ {{
     proxy_cache              segment_cache;
     proxy_cache_valid        200 10m;
     proxy_cache_lock         on;
-    proxy_cache_lock_timeout 3s;
     proxy_cache_revalidate   on;
     proxy_cache_use_stale    error timeout updating;
     proxy_cache_background_update on;
@@ -131,24 +124,22 @@ def generate_configs(data, source_url, stream_id, cdn_list):
     playlist_url = data["url"].split("&__")[0]
     parsed = urlparse(playlist_url)
     
-    # 1. UPSTREAM
+    # 1. Generazione Upstream
     u_lines = []
     for i, cdn in enumerate(cdn_list):
         backup = "backup " if i > 0 else ""
-        u_lines.append(f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s; # Score: {cdn['perf']['score']}")
+        u_lines.append(f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s; # Score Runner: {cdn['perf']['score']}")
     
     upstream_content = f"upstream live_cdn_{stream_id} {{\n" + "\n".join(u_lines) + "\n    keepalive 32;\n}\n"
 
-    # 2. SUB-FILTERS
+    # 2. Generazione Sub-filters
     sf_lines = []
     for cdn in cdn_list:
         host = cdn['cdn_host']
         sf_lines.append(f'    sub_filter "https://{host}/hls/" "/live/{stream_id}/segment/";')
         sf_lines.append(f'    sub_filter "https://{host}/storage/enc.key" "/live/{stream_id}/enc.key";')
     
-    sub_filters_content = "\n".join(sf_lines)
-
-    # 3. DATI
+    # 3. Preparazione Dati per il Template
     primary = cdn_list[0]
     token_exp = "N/D"
     for pat in [r"[&?]expires=(\d+)", r"[&?]e=(\d+)"]:
@@ -160,18 +151,17 @@ def generate_configs(data, source_url, stream_id, cdn_list):
         "stream_id": stream_id,
         "conf_filename": f"stream_{stream_id}.conf",
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "source_url": escape_nginx(source_url),
-        "playlist_url": escape_nginx(playlist_url),
+        "source_url": clean_for_nginx(source_url),
+        "playlist_url": clean_for_nginx(playlist_url),
         "token_expires": token_exp,
         "cdn_primary_info": f"{_flag(primary.get('cdn_country_code'))} {primary['cdn_host']} ({primary.get('cdn_city', 'N/D')})",
-        "cdn_sub_filters": sub_filters_content,
+        "cdn_sub_filters": "\n".join(sf_lines),
         "segment_prefix": os.path.basename(parsed.path).split(".")[0].split("-")[0],
-        "referer": escape_nginx(data.get("referer", "")),
-        "origin": escape_nginx(data.get("origin", "")),
-        "user_agent": escape_nginx(data.get("user_agent", "")),
-        "cookie_line": f'proxy_set_header Cookie "{escape_nginx(data["cookie"])}";' if data.get("cookie") else "# no cookie",
-        "primary_host_only": primary['cdn_host'].split(":")[0],
-        "playlist_path_full": escape_nginx(parsed.path + ("?" + parsed.query if parsed.query else ""))
+        "referer": clean_for_nginx(data.get("referer", "")),
+        "origin": clean_for_nginx(data.get("origin", "")),
+        "user_agent": clean_for_nginx(data.get("user_agent", "")),
+        "cookie_line": f'proxy_set_header Cookie "{clean_for_nginx(data["cookie"])}";' if data.get("cookie") else "# no cookie",
+        "playlist_path_full": clean_for_nginx(parsed.path + ("?" + parsed.query if parsed.query else ""))
     }
 
     return upstream_content, STREAM_CONF_TEMPLATE.format(**common)
@@ -192,10 +182,22 @@ def main():
             data = res[0]
             parsed = urlparse(data["url"].split("&__")[0])
             host = f"{parsed.hostname}:{parsed.port}" if parsed.port and parsed.port != 443 else parsed.hostname
-            ip_res = requests.get(f"https://cloudflare-dns.com/dns-query?name={parsed.hostname}&type=A", headers={"Accept": "application/dns-json"}).json()
-            ip = ip_res["Answer"][0]["data"] if "Answer" in ip_res else None
-            geo = requests.get(f"https://api.ip2location.io/?key={IP2LOCATION_API_KEY}&ip={ip}").json() if ip else {}
-            cdn_data = {"cdn_host": host, "cdn_country_code": geo.get("country_code", "XX"), "cdn_city": geo.get("city_name", "N/D"), "perf": get_performance_score(host)}
+            
+            # DNS e GeoIP
+            try:
+                ip_res = requests.get(f"https://cloudflare-dns.com/dns-query?name={parsed.hostname}&type=A", headers={"Accept": "application/dns-json"}).json()
+                ip = ip_res["Answer"][0]["data"] if "Answer" in ip_res else None
+                geo = requests.get(f"https://api.ip2location.io/?key={IP2LOCATION_API_KEY}&ip={ip}").json() if ip else {}
+            except:
+                geo = {}
+
+            cdn_data = {
+                "cdn_host": host, 
+                "cdn_country_code": geo.get("country_code", "XX"), 
+                "cdn_city": geo.get("city_name", "N/D"), 
+                "perf": get_performance_score(host)
+            }
+            
             with open(args.output, "w") as f:
                 json.dump({"cdn": cdn_data, "m3u8": data}, f)
 
@@ -209,13 +211,13 @@ def main():
                 if not first_m: first_m = d["m3u8"]
         
         if not cdn_list: return
+        
+        # Ordiniamo in base alla priorità geografica e allo score del Runner
         cdn_list = sorted(cdn_list, key=lambda x: (-x["perf"]["score"], CDN_COUNTRY_PRIORITY.get(x["cdn_country_code"], 5)))
         u, s = generate_configs(first_m, args.url, args.stream_id, cdn_list)
         
         with open(f"upstream_{args.stream_id}.conf", "w") as f: f.write(u)
         with open(f"stream_{args.stream_id}.conf", "w") as f: f.write(s)
-        
-        with open(f"cdn_result_{args.stream_id}.json", "w") as f:
-            json.dump({"all_cdns": cdn_list}, f)
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    main()
