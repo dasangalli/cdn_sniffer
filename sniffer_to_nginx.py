@@ -17,11 +17,14 @@ CDN_COUNTRY_PRIORITY = {"IT": 0, "GB": 1, "NL": 2, "DE": 3, "FR": 4, "US": 10}
 def clean_for_nginx(s):
     """
     Pulisce le stringhe per Nginx evitando variabili inesistenti.
-    Rimuoviamo il vecchio fix ${dlr} che causava crash.
+    Sostituisce $ con ${dlr} (mappato in nginx.conf) per evitare crash.
     """
     if not s: return ""
-    # Proteggiamo le virgolette doppie per gli header
-    return str(s).replace('"', '\\"')
+    # 1. Proteggiamo le virgolette doppie per gli header
+    s = str(s).replace('"', '\\"')
+    
+    # 2. Trasformiamo $ in ${dlr} per "ingannare" Nginx
+    return s.replace('$', '${dlr}')
 
 def _flag(code):
     if not code or len(code) != 2: return "🌐"
