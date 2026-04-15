@@ -101,17 +101,27 @@ location /live/{stream_id}/segment/ {{
     proxy_set_header User-Agent       "{user_agent}";
     {cookie_line}
     
-    # FIX: Anche qui Host dinamico per evitare 404 sui backup
     proxy_set_header Host             $proxy_host;
+
+    # Timeouts per evitare attese infinite su CDN lenti
+    proxy_connect_timeout             5s;
+    proxy_read_timeout                10s;
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
 
     proxy_cache              segment_cache;
     proxy_cache_valid        200 10m;
+    
+    # Ottimizzazione Lock: evita il "dogpile effect"
     proxy_cache_lock         on;
+    proxy_cache_lock_timeout 10s;
+    proxy_cache_lock_age     5s;
+    
     proxy_cache_revalidate   on;
-    proxy_cache_use_stale    error timeout updating;
+
+    # Fondamentale: serve il vecchio segmento se il nuovo va in errore o timeout
+    proxy_cache_use_stale    error timeout updating http_500 http_502 http_503 http_504;
     proxy_cache_background_update on;
 
     add_header Cache-Control  "max-age=600" always;
