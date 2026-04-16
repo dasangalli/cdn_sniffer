@@ -16,14 +16,13 @@ CDN_COUNTRY_PRIORITY = {"IT": 0, "GB": 1, "NL": 2, "DE": 3, "FR": 4, "US": 10}
 
 def clean_for_nginx(s):
     """
-    Pulisce le stringhe per Nginx evitando variabili inesistenti.
-    Sostituisce $ con ${dlr} (mappato in nginx.conf) per evitare crash.
+    Versione ultra-sicura: rimuove i doppi apici e protegge il simbolo $.
     """
     if not s: return ""
-    # 1. Proteggiamo le virgolette doppie per gli header
-    s = str(s).replace('"', '\\"')
+    # 1. Convertiamo in stringa e RIMUOVIAMO i doppi apici (causa del 90% degli errori)
+    s = str(s).replace('"', '') 
     
-    # 2. Trasformiamo $ in ${dlr} per "ingannare" Nginx
+    # 2. Sostituiamo il dollaro con la variabile Nginx ${dlr}
     return s.replace('$', '${dlr}')
 
 def _flag(code):
