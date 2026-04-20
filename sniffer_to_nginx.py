@@ -106,8 +106,9 @@ location /live/{stream_id}/segment/ {{
     proxy_set_header Host             $proxy_host;
 
     # Timeouts per evitare attese infinite su CDN lenti
-    proxy_connect_timeout             5s;
-    proxy_read_timeout                10s;
+    proxy_connect_timeout             3s;
+    proxy_read_timeout                5s;
+    proxy_send_timeout                5s;
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
@@ -140,7 +141,7 @@ def generate_configs(data, source_url, stream_id, cdn_list):
     u_lines = []
     for i, cdn in enumerate(cdn_list):
         backup = "backup " if i > 0 else ""
-        u_lines.append(f"    server {cdn['cdn_host']} {backup}max_fails=2 fail_timeout=30s; # Score Runner: {cdn['perf']['score']}")
+        u_lines.append(f"    server {cdn['cdn_host']} {backup}max_fails=1 fail_timeout=10s; # Score Runner: {cdn['perf']['score']}")
     
     upstream_content = f"upstream live_cdn_{stream_id} {{\n" + "\n".join(u_lines) + "\n    keepalive 32;\n}\n"
 
