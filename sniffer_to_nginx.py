@@ -107,8 +107,8 @@ location /live/{stream_id}/segment/ {{
 
     # Timeouts per evitare attese infinite su CDN lenti
     proxy_connect_timeout             3s;
-    proxy_read_timeout                5s;
-    proxy_send_timeout                5s;
+    proxy_read_timeout                4s;
+    proxy_send_timeout                4s;
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
@@ -123,9 +123,12 @@ location /live/{stream_id}/segment/ {{
     
     proxy_cache_revalidate   on;
 
-    # Fondamentale: serve il vecchio segmento se il nuovo va in errore o timeout
     proxy_cache_use_stale    error timeout updating http_500 http_502 http_503 http_504;
-    proxy_cache_background_update on;
+    proxy_cache_background_update off;
+    
+    proxy_next_upstream error timeout invalid_header http_500 http_502 http_504;
+    proxy_next_upstream_tries 2;
+    proxy_next_upstream_timeout 5s;
 
     add_header Cache-Control  "max-age=600" always;
     add_header X-Cache-Status $upstream_cache_status always;
