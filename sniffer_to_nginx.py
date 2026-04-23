@@ -112,7 +112,6 @@ location /live/{stream_id}/segment/ {{
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
-    proxy_ssl_name  $proxy_host;
 
     proxy_cache              segment_cache;
     proxy_cache_valid        200 10m;
