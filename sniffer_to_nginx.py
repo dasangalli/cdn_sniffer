@@ -76,6 +76,7 @@ location /live/{stream_id}/playlist.m3u8 {{
 
     # FIX: Usiamo $proxy_host per adattarsi dinamicamente al server dell'upstream
     proxy_set_header Host             $proxy_host;
+    proxy_ssl_name                    $proxy_host;
 
     proxy_pass        https://live_cdn_{stream_id}{playlist_path_full};
     proxy_ssl_server_name on;
@@ -108,6 +109,7 @@ location /live/{stream_id}/segment/ {{
     {cookie_line}
     
     proxy_set_header Host             $proxy_host;
+    proxy_ssl_name                    $proxy_host;
 
     # Timeouts per evitare attese infinite su CDN lenti
     proxy_connect_timeout             3s;
