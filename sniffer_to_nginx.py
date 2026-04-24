@@ -82,14 +82,18 @@ location /live/{stream_id}/playlist.m3u8 {{
     proxy_ssl_server_name on;
 
     proxy_connect_timeout             3s;
-    proxy_read_timeout                4s;
-    proxy_send_timeout                4s;
+    proxy_read_timeout                5s;
+    proxy_send_timeout                5s;
+
+    proxy_next_upstream error timeout invalid_header http_500 http_502 http_504;
+    proxy_next_upstream_tries 2;
+    proxy_next_upstream_timeout 6s;
 
     proxy_cache              playlist_cache;
     proxy_cache_valid        200 3s;
     proxy_cache_lock         on;
     proxy_cache_use_stale    error timeout updating;
-    proxy_cache_background_update on;
+    proxy_cache_background_update off;
 
     add_header Cache-Control  "no-cache, no-store, must-revalidate" always;
     add_header X-Cache-Status $upstream_cache_status always;
@@ -113,8 +117,8 @@ location /live/{stream_id}/segment/ {{
 
     # Timeouts per evitare attese infinite su CDN lenti
     proxy_connect_timeout             3s;
-    proxy_read_timeout                4s;
-    proxy_send_timeout                4s;
+    proxy_read_timeout                5s;
+    proxy_send_timeout                5s;
 
     proxy_pass        https://live_cdn_{stream_id};
     proxy_ssl_server_name on;
@@ -134,7 +138,7 @@ location /live/{stream_id}/segment/ {{
     
     proxy_next_upstream error timeout invalid_header http_500 http_502 http_504;
     proxy_next_upstream_tries 2;
-    proxy_next_upstream_timeout 5s;
+    proxy_next_upstream_timeout 6s;
 
     add_header Cache-Control  "max-age=600" always;
     add_header X-Cache-Status $upstream_cache_status always;
