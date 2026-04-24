@@ -80,6 +80,10 @@ location /live/{stream_id}/playlist.m3u8 {{
     proxy_pass        https://live_cdn_{stream_id}{playlist_path_full};
     proxy_ssl_server_name on;
 
+    proxy_connect_timeout             3s;
+    proxy_read_timeout                4s;
+    proxy_send_timeout                4s;
+
     proxy_cache              playlist_cache;
     proxy_cache_valid        200 3s;
     proxy_cache_lock         on;
