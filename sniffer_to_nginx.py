@@ -133,10 +133,10 @@ location /live/{stream_id}/segment/ {{
     
     proxy_cache_revalidate   on;
 
-    proxy_cache_use_stale    error timeout updating http_500 http_502 http_503 http_504;
+    proxy_cache_use_stale    error timeout updating http_500 http_502 http_503 http_504 http_404;
     proxy_cache_background_update off;
     
-    proxy_next_upstream error timeout invalid_header http_500 http_502 http_504;
+    proxy_next_upstream error timeout invalid_header http_500 http_502 http_504 http_404;
     proxy_next_upstream_tries 2;
     proxy_next_upstream_timeout 6s;
 
