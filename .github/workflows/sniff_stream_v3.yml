@@ -1,0 +1,129 @@
+name: Sniff stream CDN with Performance - V3
+
+on:
+  workflow_dispatch:
+    inputs:
+      stream_id:
+        description: 'ID dello stream (es: 1)'
+        required: true
+        default: '1'
+      url:
+        description: 'URL della pagina sorgente'
+        required: true
+      sniff_timeout:
+        description: 'Secondi di attesa per ogni job'
+        default: '15'
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job paralleli: Sniffing e Benchmark MTR
+  # ---------------------------------------------------------------------------
+  sniff:
+    name: Sniff & Bench Job ${{ matrix.job_index }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        job_index: [1, 2, 3, 4, 5, 6] # Numero di runner paralleli
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mtr-tiny
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install playwright requests pytz
+          # FIX: Installiamo i browser con sudo così sono accessibili a root
+          sudo env "PATH=$PATH" playwright install chromium
+          sudo env "PATH=$PATH" playwright install-deps chromium
+
+      - name: Sniff and Performance Test
+        run: |
+          # Eseguiamo lo script con sudo per MTR, ora Playwright troverà i browser in /root/.cache
+          sudo env "PATH=$PATH" python sniffer_to_nginx.py \
+            --url "${{ inputs.url }}" \
+            --stream-id "${{ inputs.stream_id }}" \
+            --sniff-timeout "${{ inputs.sniff_timeout }}" \
+            --sniff-only \
+            --output "cdn_${{ matrix.job_index }}.json"
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdn-raw-${{ inputs.stream_id }}-${{ matrix.job_index }}
+          path: cdn_${{ matrix.job_index }}.json
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Job finale: Merge basato sullo Score di Performance
+  # ---------------------------------------------------------------------------
+  merge:
+    name: Select Best CDN and Generate Conf
+    needs: sniff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python Dependencies
+        run: |
+          pip install playwright requests pytz
+
+      - name: Scarica tutti i risultati
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cdn-raw-${{ inputs.stream_id }}-*
+          merge-multiple: true
+          path: cdn_results/
+
+      - name: Final Merge and Config Generation
+        run: |
+          python sniffer_to_nginx.py \
+            --url "${{ inputs.url }}" \
+            --stream-id "${{ inputs.stream_id }}" \
+            --merge-dir cdn_results/
+
+      - name: Upload Final Nginx Configs
+        uses: actions/upload-artifact@v4
+        with:
+          name: nginx-final-stream-${{ inputs.stream_id }}
+          path: |
+            upstream_${{ inputs.stream_id }}.conf
+            stream_${{ inputs.stream_id }}.conf
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job di Deploy: Caricamento file sulla VM
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Upload Configs to VM
+    needs: merge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scarica i file generati nel job merge
+        uses: actions/download-artifact@v4
+        with:
+          name: nginx-final-stream-${{ inputs.stream_id }}
+
+      - name: Copy Files via SCP to VM
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VM_HOST }}
+          username: ${{ secrets.VM_USER }}
+          key: ${{ secrets.VM_SSH_KEY }}
+          source: "stream_${{ inputs.stream_id }}.conf,upstream_${{ inputs.stream_id }}.conf"
+          target: "/home/ubuntu/confd"
+          strip_components: 0
